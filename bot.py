@@ -1,6 +1,4 @@
-"""
-Telegram OCR -> AI extraction -> Google Sheets bot (FREE, no credit card)
-"""
+"""Telegram bill logger -> Google Sheets (FREE)"""
 
 import io
 import json
@@ -63,7 +61,12 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-HEADER_ROW = ["Timestamp", "Name", "Type", "Store", "Date", "Total", "Items", "Raw Text"]
+HEADER_ROW = ["Name", "Telegram ID", "Category", "Date & Time", "Total", "Image"]
+
+CATEGORIES = [
+    "Food", "Groceries", "Travel", "Shopping", "Utilities",
+    "Bills", "Health", "Entertainment", "Other",
+]
 
 _working_model = {"name": None}
 
@@ -117,6 +120,14 @@ def now_string():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S") + " UTC"
 
 
+def telegram_file_url(file_path):
+    if not file_path:
+        return ""
+    if file_path.startswith("http"):
+        return file_path
+    return f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+
+
 def shrink_image_if_needed(image_bytes):
     if len(image_bytes) <= MAX_OCR_BYTES:
         return image_bytes
@@ -164,33 +175,28 @@ async def ocr_image(image_bytes):
 
 
 EXTRACT_PROMPT = (
-    "You are an expense/receipt parser. Read the text below (it may come from a "
-    "photo of a bill, or be a plain note) and extract these fields. If a field "
-    "is not present, return an empty string for it.\n"
-    "- store: the shop / restaurant / vendor / company name.\n"
-    "- date: the bill or transaction date exactly as written.\n"
-    "- total: the final total amount paid, including the currency symbol/word "
-    "if shown (e.g. 'Rs. 1529.00').\n"
-    "- items: a short comma-separated list of the item names purchased, "
-    "WITHOUT prices or quantities. If it's not a purchase, leave empty.\n\n"
+    "You are an expense parser. Read the text below (from a bill photo or a "
+    "plain note) and return two fields.\n"
+    "- total: the final total amount paid, with currency if shown "
+    "(e.g. 'Rs. 1529.00'). Empty string if none.\n"
+    "- category: choose exactly ONE that best fits, from this list: "
+    + ", ".join(CATEGORIES) + ". If unsure, use 'Other'.\n\n"
     "TEXT:\n"
 )
 
 RESPONSE_SCHEMA = {
     "type": "OBJECT",
     "properties": {
-        "store": {"type": "STRING"},
-        "date": {"type": "STRING"},
         "total": {"type": "STRING"},
-        "items": {"type": "STRING"},
+        "category": {"type": "STRING"},
     },
-    "required": ["store", "date", "total", "items"],
+    "required": ["total", "category"],
 }
 
 
 async def extract_fields(text):
     if not text.strip():
-        return {"store": "", "date": "", "total": "", "items": ""}
+        return {"total": "", "category": ""}
 
     body = {
         "contents": [{"parts": [{"text": EXTRACT_PROMPT + text}]}],
@@ -227,59 +233,41 @@ async def extract_fields(text):
                 raw = data["candidates"][0]["content"]["parts"][0]["text"]
                 fields = json.loads(raw)
                 _working_model["name"] = model
-                return {
-                    "store": str(fields.get("store", "")).strip(),
-                    "date": str(fields.get("date", "")).strip(),
-                    "total": str(fields.get("total", "")).strip(),
-                    "items": str(fields.get("items", "")).strip(),
-                }
+                cat = str(fields.get("category", "")).strip() or "Other"
+                return {"total": str(fields.get("total", "")).strip(),
+                        "category": cat}
             except Exception as exc:
                 last_err = str(exc)
                 continue
 
     logger.warning("Gemini extraction failed: %s", last_err)
-    return {"store": "", "date": "", "total": "", "items": ""}
+    return {"total": "", "category": ""}
 
 
-def save_row(worksheet, name, kind, fields, raw_text):
+def save_row(worksheet, name, tg_id, category, total, image_cell):
     worksheet.append_row(
-        [
-            now_string(),
-            name,
-            kind,
-            fields.get("store", ""),
-            fields.get("date", ""),
-            fields.get("total", ""),
-            fields.get("items", ""),
-            raw_text,
-        ],
+        [name, str(tg_id), category, now_string(), total, image_cell],
         value_input_option="USER_ENTERED",
     )
 
 
-def summary_reply(fields, raw_text):
+def summary_reply(category, total, has_image):
     lines = ["✅ Saved to your sheet!"]
-    if fields.get("store"):
-        lines.append(f"🏪 Store: {fields['store']}")
-    if fields.get("date"):
-        lines.append(f"📅 Date: {fields['date']}")
-    if fields.get("total"):
-        lines.append(f"💰 Total: {fields['total']}")
-    if fields.get("items"):
-        lines.append(f"🧾 Items: {fields['items']}")
-    if len(lines) == 1:
-        preview = raw_text if len(raw_text) <= 500 else raw_text[:500] + "…"
-        lines.append(preview)
+    if category:
+        lines.append(f"🏷️ Category: {category}")
+    if total:
+        lines.append(f"💰 Total: {total}")
+    if has_image:
+        lines.append("🖼️ Image saved (view it in the sheet).")
     return "\n".join(lines)
 
 
 async def start(update, context):
     await update.message.reply_text(
-        "Hi! I'm your smart receipt logger.\n\n"
-        "• Send me a photo of a bill/receipt and I'll read it, pull out the "
-        "store, date, total and items, and save them in neat columns.\n"
-        "• Send me text (like an expense note) and I'll do the same.\n\n"
-        "Try sending a receipt photo!"
+        "Hi! I'm your bill logger.\n\n"
+        "Send me a photo of a bill (or a text note) and I'll save it to your "
+        "Google Sheet with your name, Telegram ID, category, date & time, "
+        "total, and the image.\n\nTry sending a receipt photo!"
     )
 
 
@@ -292,8 +280,11 @@ async def handle_text(update, context):
     )
     try:
         fields = await extract_fields(text)
-        save_row(worksheet, user.full_name, "Text", fields, text)
-        await update.message.reply_text(summary_reply(fields, text))
+        save_row(worksheet, user.full_name, user.id,
+                 fields["category"], fields["total"], "")
+        await update.message.reply_text(
+            summary_reply(fields["category"], fields["total"], False)
+        )
     except Exception as exc:
         logger.exception("Failed to handle text")
         await update.message.reply_text(f"⚠️ Sorry, I couldn't save that: {exc}")
@@ -312,29 +303,24 @@ async def handle_photo(update, context):
     else:
         tg_file = await update.message.document.get_file()
 
+    img_url = telegram_file_url(tg_file.file_path)
+    image_cell = f'=IMAGE("{img_url}")' if img_url else ""
+
     buffer = io.BytesIO()
     await tg_file.download_to_memory(out=buffer)
     image_bytes = buffer.getvalue()
 
     try:
         raw_text = await ocr_image(image_bytes)
-    except Exception as exc:
+    except Exception:
         logger.exception("OCR failed")
-        await update.message.reply_text(f"⚠️ I couldn't read that image: {exc}")
-        return
+        raw_text = ""
 
-    if not raw_text:
-        await update.message.reply_text(
-            "I looked at the image but couldn't find any readable text."
-        )
-        save_row(worksheet, user.full_name, "Image",
-                 {"store": "", "date": "", "total": "", "items": ""},
-                 "(no text found)")
-        return
+    fields = await extract_fields(raw_text) if raw_text else {"total": "", "category": ""}
 
-    fields = await extract_fields(raw_text)
     try:
-        save_row(worksheet, user.full_name, "Image", fields, raw_text)
+        save_row(worksheet, user.full_name, user.id,
+                 fields["category"], fields["total"], image_cell)
     except Exception as exc:
         logger.exception("Failed to save row")
         await update.message.reply_text(
@@ -342,7 +328,9 @@ async def handle_photo(update, context):
         )
         return
 
-    await update.message.reply_text(summary_reply(fields, raw_text))
+    await update.message.reply_text(
+        summary_reply(fields["category"], fields["total"], bool(image_cell))
+    )
 
 
 async def handle_document(update, context):
