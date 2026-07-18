@@ -51,6 +51,14 @@ PORT = int(os.environ.get("PORT", "8080"))
 # the bot falls back to Telegram's temporary file URL (which expires in ~1h).
 DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID", "").strip()
 
+# Optional: Supabase Storage for permanent image hosting (preferred).
+#   SUPABASE_URL       e.g. https://abcdxyz.supabase.co
+#   SUPABASE_KEY       the service_role key (Project Settings -> API)
+#   SUPABASE_BUCKET    a PUBLIC storage bucket name (default: "receipts")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
+SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET", "receipts").strip() or "receipts"
+
 OCR_SPACE_URL = "https://api.ocr.space/parse/image"
 MAX_OCR_BYTES = 1_000_000
 
@@ -131,6 +139,37 @@ def telegram_file_url(file_path):
     if file_path.startswith("http"):
         return file_path
     return f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+
+
+def upload_image_to_supabase(image_bytes, filename):
+    """Upload the image to a public Supabase Storage bucket and return its
+    permanent public URL for =IMAGE(). Returns "" on any failure (caller then
+    falls back to the next option)."""
+    if not (SUPABASE_URL and SUPABASE_KEY) or not image_bytes:
+        return ""
+    upload_url = (
+        f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{filename}"
+    )
+    try:
+        resp = httpx.post(
+            upload_url,
+            headers={
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "apikey": SUPABASE_KEY,
+                "Content-Type": "image/jpeg",
+                "x-upsert": "true",
+            },
+            content=image_bytes,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return (
+            f"{SUPABASE_URL}/storage/v1/object/public/"
+            f"{SUPABASE_BUCKET}/{filename}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Supabase upload failed, trying next option: %s", exc)
+        return ""
 
 
 _drive_service = {"client": None}
@@ -346,11 +385,14 @@ async def handle_photo(update, context):
     await tg_file.download_to_memory(out=buffer)
     image_bytes = buffer.getvalue()
 
-    # Prefer a permanent Drive URL; fall back to Telegram's temporary URL.
-    drive_url = upload_image_to_drive(
-        image_bytes, f"{user.id}_{tg_file.file_unique_id}.jpg"
+    # Prefer permanent cloud storage (Supabase, then Drive); if neither is
+    # configured, fall back to Telegram's temporary URL (expires in ~1h).
+    filename = f"{user.id}_{tg_file.file_unique_id}.jpg"
+    img_url = (
+        upload_image_to_supabase(image_bytes, filename)
+        or upload_image_to_drive(image_bytes, filename)
+        or telegram_file_url(tg_file.file_path)
     )
-    img_url = drive_url or telegram_file_url(tg_file.file_path)
     image_cell = f'=IMAGE("{img_url}")' if img_url else ""
 
     try:
