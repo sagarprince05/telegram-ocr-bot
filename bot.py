@@ -9,6 +9,8 @@ from datetime import datetime
 import gspread
 import httpx
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build as _google_build
+from googleapiclient.http import MediaIoBaseUpload
 from PIL import Image
 from telegram import Update
 from telegram.constants import ChatAction
@@ -37,23 +39,26 @@ GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON", "").strip()
 SHEET_ID = os.environ.get("SHEET_ID", "").strip()
 OCR_SPACE_API_KEY = os.environ.get("OCR_SPACE_API_KEY", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip() or "gemini-flash-latest"
 WORKSHEET_NAME = os.environ.get("WORKSHEET_NAME", "Sheet1").strip() or "Sheet1"
 TIMEZONE = os.environ.get("TIMEZONE", "UTC").strip() or "UTC"
 OCR_LANGUAGE = os.environ.get("OCR_LANGUAGE", "eng").strip() or "eng"
 MODE = os.environ.get("MODE", "polling").strip().lower()
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").strip().rstrip("/")
 PORT = int(os.environ.get("PORT", "8080"))
+# Optional: a Google Drive folder (owned by you, shared with the service
+# account as Editor) where receipt images are stored permanently. If not set,
+# the bot falls back to Telegram's temporary file URL (which expires in ~1h).
+DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID", "").strip()
 
 OCR_SPACE_URL = "https://api.ocr.space/parse/image"
 MAX_OCR_BYTES = 1_000_000
 
 GEMINI_MODEL_FALLBACKS = [
     GEMINI_MODEL,
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
     "gemini-flash-latest",
-    "gemini-2.5-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-2.0-flash",
 ]
 
 SCOPES = [
@@ -126,6 +131,40 @@ def telegram_file_url(file_path):
     if file_path.startswith("http"):
         return file_path
     return f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+
+
+_drive_service = {"client": None}
+
+
+def _build_drive_client():
+    info = json.loads(GOOGLE_CREDENTIALS_JSON)
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    return _google_build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def upload_image_to_drive(image_bytes, filename):
+    """Upload the image to the configured Drive folder, make it viewable by
+    anyone with the link, and return a stable image URL for =IMAGE().
+    Returns "" on any failure (caller then falls back to the Telegram URL)."""
+    if not DRIVE_FOLDER_ID or not image_bytes:
+        return ""
+    try:
+        if _drive_service["client"] is None:
+            _drive_service["client"] = _build_drive_client()
+        drive = _drive_service["client"]
+        meta = {"name": filename, "parents": [DRIVE_FOLDER_ID]}
+        media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype="image/jpeg")
+        created = drive.files().create(
+            body=meta, media_body=media, fields="id"
+        ).execute()
+        file_id = created["id"]
+        drive.permissions().create(
+            fileId=file_id, body={"type": "anyone", "role": "reader"}
+        ).execute()
+        return f"https://drive.google.com/thumbnail?id={file_id}&sz=w1000"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Drive upload failed, using Telegram URL instead: %s", exc)
+        return ""
 
 
 def shrink_image_if_needed(image_bytes):
@@ -303,12 +342,16 @@ async def handle_photo(update, context):
     else:
         tg_file = await update.message.document.get_file()
 
-    img_url = telegram_file_url(tg_file.file_path)
-    image_cell = f'=IMAGE("{img_url}")' if img_url else ""
-
     buffer = io.BytesIO()
     await tg_file.download_to_memory(out=buffer)
     image_bytes = buffer.getvalue()
+
+    # Prefer a permanent Drive URL; fall back to Telegram's temporary URL.
+    drive_url = upload_image_to_drive(
+        image_bytes, f"{user.id}_{tg_file.file_unique_id}.jpg"
+    )
+    img_url = drive_url or telegram_file_url(tg_file.file_path)
+    image_cell = f'=IMAGE("{img_url}")' if img_url else ""
 
     try:
         raw_text = await ocr_image(image_bytes)
