@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 venv/
 run_local.py
+RESUME_NOTES.md
