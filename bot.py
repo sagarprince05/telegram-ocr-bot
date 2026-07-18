@@ -393,7 +393,8 @@ async def handle_photo(update, context):
         or upload_image_to_drive(image_bytes, filename)
         or telegram_file_url(tg_file.file_path)
     )
-    image_cell = f'=IMAGE("{img_url}")' if img_url else ""
+    # A clickable link that opens the full photo when clicked.
+    image_cell = f'=HYPERLINK("{img_url}","📷 View Photo")' if img_url else ""
 
     try:
         raw_text = await ocr_image(image_bytes)
