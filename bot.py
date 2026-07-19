@@ -74,7 +74,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-HEADER_ROW = ["Name", "Telegram ID", "Category", "Date & Time", "Total", "Image"]
+HEADER_ROW = ["Name", "Telegram ID", "Category", "Date & Time", "Amount", "Image"]
 
 CATEGORIES = [
     "Food", "Groceries", "Travel", "Shopping", "Utilities",
@@ -119,8 +119,19 @@ def get_worksheet(gspread_client):
     existing = worksheet.get_all_values()
     if not existing:
         worksheet.append_row(HEADER_ROW, value_input_option="USER_ENTERED")
-    elif existing[0] != HEADER_ROW:
-        worksheet.update([HEADER_ROW], "A1")
+    else:
+        first = existing[0]
+        looks_like_header = bool(first) and first[0].strip().lower() == "name"
+        if looks_like_header:
+            # It's a header row; correct/rename it in place if needed.
+            if first != HEADER_ROW:
+                worksheet.update([HEADER_ROW], "A1")
+        else:
+            # No header present (first row is data) -> insert one above so we
+            # never overwrite a real data row.
+            worksheet.insert_row(
+                HEADER_ROW, 1, value_input_option="USER_ENTERED"
+            )
     return worksheet
 
 
