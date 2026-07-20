@@ -91,7 +91,7 @@
       </div>
       <div class="panel">
         <h3>Transactions <span class="chip" id="txnCount">0</span></h3>
-        <div class="tablewrap"><table id="tblTxn"><thead><tr><th>Date</th><th>Person</th><th>Category</th><th class="amt">Amount</th></tr></thead><tbody></tbody></table></div>
+        <div class="tablewrap"><table id="tblTxn"><thead><tr><th>Date</th><th>Person</th><th>Vendor</th><th>Category</th><th class="amt">Amount</th></tr></thead><tbody></tbody></table></div>
       </div>
     </div>
   </div>
@@ -198,7 +198,7 @@
     document.getElementById('txnCount').textContent=rows.length;
     rows.slice().sort(function(a,b){return (b.date||'').localeCompare(a.date||'');}).forEach(function(r){
       var tr=document.createElement('tr');
-      tr.innerHTML='<td>'+esc(r.date||'—')+'</td><td>'+esc(r.name)+'</td><td><span class="chip">'+esc(r.category)+'</span></td><td class="amt">'+inr(r.amount)+'</td>';
+      tr.innerHTML='<td>'+esc(r.date||'—')+'</td><td>'+esc(r.name)+'</td><td>'+esc(r.vendor||'—')+'</td><td><span class="chip">'+esc(r.category)+'</span></td><td class="amt">'+inr(r.amount)+'</td>';
       tb.appendChild(tr);
     });
   }

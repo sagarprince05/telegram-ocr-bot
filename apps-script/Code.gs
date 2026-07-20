@@ -37,18 +37,19 @@ function getData() {
   var values = sh.getDataRange().getValues();
   var rows = [];
 
-  // Row layout: 0 Name | 1 Telegram ID | 2 Category | 3 Date & Time | 4 Amount | 5 Image
+  // Row layout: 0 Name | 1 Telegram ID | 2 Vendor | 3 Category | 4 Date & Time | 5 Amount | 6 Image
   for (var i = 1; i < values.length; i++) {
     var r = values[i];
     var name = r[0];
-    var amountRaw = r[4];
+    var amountRaw = r[5];
     if (!name && (amountRaw === '' || amountRaw === null)) continue; // skip blanks
 
     rows.push({
       name: String(name || 'Unknown').trim(),
       telegramId: String(r[1] || '').trim(),
-      category: String(r[2] || 'Other').trim() || 'Other',
-      date: normalizeDate_(r[3], tz),
+      vendor: String(r[2] || '').trim(),
+      category: String(r[3] || 'Other').trim() || 'Other',
+      date: normalizeDate_(r[4], tz),
       amount: toNumber_(amountRaw)
     });
   }

@@ -75,7 +75,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-HEADER_ROW = ["Name", "Telegram ID", "Category", "Date & Time", "Amount", "Image"]
+HEADER_ROW = ["Name", "Telegram ID", "Vendor", "Category", "Date & Time", "Amount", "Image"]
 
 CATEGORIES = [
     "Food", "Groceries", "Travel", "Shopping", "Utilities",
@@ -279,6 +279,8 @@ EXTRACT_PROMPT = (
     "consistent value ('724.50'). Empty string if none.\n"
     "- category: choose exactly ONE that best fits, from this list: "
     + ", ".join(CATEGORIES) + ". If unsure, use 'Other'.\n"
+    "- vendor: the shop / restaurant / store / company name (usually printed at "
+    "the top of the bill). Empty string if not shown or it is a plain note.\n"
     "- date: the date the money was spent (the bill / transaction date shown "
     "in the text), formatted as 'YYYY-MM-DD'. If a time is also shown, use "
     "'YYYY-MM-DD HH:MM' in 24-hour time. If no date is present, empty string.\n\n"
@@ -300,15 +302,16 @@ RESPONSE_SCHEMA = {
     "properties": {
         "total": {"type": "STRING"},
         "category": {"type": "STRING"},
+        "vendor": {"type": "STRING"},
         "date": {"type": "STRING"},
     },
-    "required": ["total", "category", "date"],
+    "required": ["total", "category", "vendor", "date"],
 }
 
 
 async def extract_fields(text):
     if not text.strip():
-        return {"total": "", "category": "", "date": ""}
+        return {"total": "", "category": "", "vendor": "", "date": ""}
 
     body = {
         "contents": [{"parts": [{"text": EXTRACT_PROMPT + text}]}],
@@ -348,24 +351,27 @@ async def extract_fields(text):
                 cat = str(fields.get("category", "")).strip() or "Other"
                 return {"total": clean_amount(fields.get("total", "")),
                         "category": cat,
+                        "vendor": str(fields.get("vendor", "")).strip(),
                         "date": str(fields.get("date", "")).strip()}
             except Exception as exc:
                 last_err = str(exc)
                 continue
 
     logger.warning("Gemini extraction failed: %s", last_err)
-    return {"total": "", "category": "", "date": ""}
+    return {"total": "", "category": "", "vendor": "", "date": ""}
 
 
-def save_row(worksheet, name, tg_id, category, spent_at, total, image_cell):
+def save_row(worksheet, name, tg_id, vendor, category, spent_at, total, image_cell):
     worksheet.append_row(
-        [name, str(tg_id), category, spent_at, total, image_cell],
+        [name, str(tg_id), vendor, category, spent_at, total, image_cell],
         value_input_option="USER_ENTERED",
     )
 
 
-def summary_reply(category, total, has_image):
+def summary_reply(vendor, category, total, has_image):
     lines = ["✅ Saved to your sheet!"]
+    if vendor:
+        lines.append(f"🏪 Vendor: {vendor}")
     if category:
         lines.append(f"🏷️ Category: {category}")
     if total:
@@ -395,9 +401,11 @@ async def handle_text(update, context):
         fields = await extract_fields(text)
         spent_at = fields.get("date") or now_string()
         save_row(worksheet, user.full_name, user.id,
-                 fields["category"], spent_at, fields["total"], "")
+                 fields.get("vendor", ""), fields["category"], spent_at,
+                 fields["total"], "")
         await update.message.reply_text(
-            summary_reply(fields["category"], fields["total"], False)
+            summary_reply(fields.get("vendor", ""), fields["category"],
+                          fields["total"], False)
         )
     except Exception as exc:
         logger.exception("Failed to handle text")
@@ -438,12 +446,13 @@ async def handle_photo(update, context):
         logger.exception("OCR failed")
         raw_text = ""
 
-    fields = await extract_fields(raw_text) if raw_text else {"total": "", "category": "", "date": ""}
+    fields = await extract_fields(raw_text) if raw_text else {"total": "", "category": "", "vendor": "", "date": ""}
     spent_at = fields.get("date") or now_string()
 
     try:
         save_row(worksheet, user.full_name, user.id,
-                 fields["category"], spent_at, fields["total"], image_cell)
+                 fields.get("vendor", ""), fields["category"], spent_at,
+                 fields["total"], image_cell)
     except Exception as exc:
         logger.exception("Failed to save row")
         await update.message.reply_text(
@@ -452,7 +461,8 @@ async def handle_photo(update, context):
         return
 
     await update.message.reply_text(
-        summary_reply(fields["category"], fields["total"], bool(image_cell))
+        summary_reply(fields.get("vendor", ""), fields["category"],
+                      fields["total"], bool(image_cell))
     )
 
 
