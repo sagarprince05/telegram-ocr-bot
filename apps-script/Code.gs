@@ -12,7 +12,12 @@ var SHEET_ID = '1TJl89DGIspfcBbBnslM3fc1xZvQFW4y4x4NVNuF7PdQ';
 var TAB_NAME = 'Sheet1';
 
 function doGet() {
-  return HtmlService.createHtmlOutputFromFile('Index')
+  // Inject the data into the page at render time so the dashboard does NOT
+  // depend on google.script.run (which can hang with multi-account/cookie
+  // setups). Reloading the page fetches fresh data.
+  var t = HtmlService.createTemplateFromFile('Index');
+  t.data = JSON.stringify(getData());
+  return t.evaluate()
     .setTitle('Expense Dashboard')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }

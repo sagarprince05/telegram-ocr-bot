@@ -104,7 +104,9 @@
 
   function inr(n){ return '₹' + (Math.round(n*100)/100).toLocaleString('en-IN'); }
 
-  google.script.run.withSuccessHandler(onData).withFailureHandler(onErr).getData();
+  // Data is injected by the server at page load (no google.script.run needed).
+  var SERVER_DATA = <?!= data ?>;
+  onData(SERVER_DATA);
 
   function onErr(e){
     document.getElementById('loading').innerHTML =
