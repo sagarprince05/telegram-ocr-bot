@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import re
 from datetime import datetime
 
 import gspread
@@ -266,12 +267,23 @@ async def ocr_image(image_bytes):
 EXTRACT_PROMPT = (
     "You are an expense parser. Read the text below (from a bill photo or a "
     "plain note) and return two fields.\n"
-    "- total: the final total amount paid, with currency if shown "
-    "(e.g. 'Rs. 1529.00'). Empty string if none.\n"
+    "- total: the final total amount paid as a NUMBER ONLY, with no currency "
+    "symbol or words. Use only digits and an optional decimal point "
+    "(e.g. '1529.00', NOT 'Rs. 1529.00'). Empty string if none.\n"
     "- category: choose exactly ONE that best fits, from this list: "
     + ", ".join(CATEGORIES) + ". If unsure, use 'Other'.\n\n"
     "TEXT:\n"
 )
+
+
+def clean_amount(value):
+    """Return the plain numeric amount as a string (no currency symbol/words,
+    no thousands separators). '' if no number is found."""
+    if not value:
+        return ""
+    text = str(value).replace(",", "")          # drop thousands separators
+    match = re.search(r"\d+(?:\.\d+)?", text)    # first number, optional decimals
+    return match.group(0) if match else ""
 
 RESPONSE_SCHEMA = {
     "type": "OBJECT",
@@ -323,7 +335,7 @@ async def extract_fields(text):
                 fields = json.loads(raw)
                 _working_model["name"] = model
                 cat = str(fields.get("category", "")).strip() or "Other"
-                return {"total": str(fields.get("total", "")).strip(),
+                return {"total": clean_amount(fields.get("total", "")),
                         "category": cat}
             except Exception as exc:
                 last_err = str(exc)
