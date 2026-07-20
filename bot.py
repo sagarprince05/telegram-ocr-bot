@@ -266,12 +266,15 @@ async def ocr_image(image_bytes):
 
 EXTRACT_PROMPT = (
     "You are an expense parser. Read the text below (from a bill photo or a "
-    "plain note) and return two fields.\n"
+    "plain note) and return three fields.\n"
     "- total: the final total amount paid as a NUMBER ONLY, with no currency "
     "symbol or words. Use only digits and an optional decimal point "
     "(e.g. '1529.00', NOT 'Rs. 1529.00'). Empty string if none.\n"
     "- category: choose exactly ONE that best fits, from this list: "
-    + ", ".join(CATEGORIES) + ". If unsure, use 'Other'.\n\n"
+    + ", ".join(CATEGORIES) + ". If unsure, use 'Other'.\n"
+    "- date: the date the money was spent (the bill / transaction date shown "
+    "in the text), formatted as 'YYYY-MM-DD'. If a time is also shown, use "
+    "'YYYY-MM-DD HH:MM' in 24-hour time. If no date is present, empty string.\n\n"
     "TEXT:\n"
 )
 
@@ -290,14 +293,15 @@ RESPONSE_SCHEMA = {
     "properties": {
         "total": {"type": "STRING"},
         "category": {"type": "STRING"},
+        "date": {"type": "STRING"},
     },
-    "required": ["total", "category"],
+    "required": ["total", "category", "date"],
 }
 
 
 async def extract_fields(text):
     if not text.strip():
-        return {"total": "", "category": ""}
+        return {"total": "", "category": "", "date": ""}
 
     body = {
         "contents": [{"parts": [{"text": EXTRACT_PROMPT + text}]}],
@@ -336,18 +340,19 @@ async def extract_fields(text):
                 _working_model["name"] = model
                 cat = str(fields.get("category", "")).strip() or "Other"
                 return {"total": clean_amount(fields.get("total", "")),
-                        "category": cat}
+                        "category": cat,
+                        "date": str(fields.get("date", "")).strip()}
             except Exception as exc:
                 last_err = str(exc)
                 continue
 
     logger.warning("Gemini extraction failed: %s", last_err)
-    return {"total": "", "category": ""}
+    return {"total": "", "category": "", "date": ""}
 
 
-def save_row(worksheet, name, tg_id, category, total, image_cell):
+def save_row(worksheet, name, tg_id, category, spent_at, total, image_cell):
     worksheet.append_row(
-        [name, str(tg_id), category, now_string(), total, image_cell],
+        [name, str(tg_id), category, spent_at, total, image_cell],
         value_input_option="USER_ENTERED",
     )
 
@@ -381,8 +386,9 @@ async def handle_text(update, context):
     )
     try:
         fields = await extract_fields(text)
+        spent_at = fields.get("date") or now_string()
         save_row(worksheet, user.full_name, user.id,
-                 fields["category"], fields["total"], "")
+                 fields["category"], spent_at, fields["total"], "")
         await update.message.reply_text(
             summary_reply(fields["category"], fields["total"], False)
         )
@@ -425,11 +431,12 @@ async def handle_photo(update, context):
         logger.exception("OCR failed")
         raw_text = ""
 
-    fields = await extract_fields(raw_text) if raw_text else {"total": "", "category": ""}
+    fields = await extract_fields(raw_text) if raw_text else {"total": "", "category": "", "date": ""}
+    spent_at = fields.get("date") or now_string()
 
     try:
         save_row(worksheet, user.full_name, user.id,
-                 fields["category"], fields["total"], image_cell)
+                 fields["category"], spent_at, fields["total"], image_cell)
     except Exception as exc:
         logger.exception("Failed to save row")
         await update.message.reply_text(
