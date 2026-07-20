@@ -79,7 +79,7 @@ HEADER_ROW = ["Name", "Telegram ID", "Category", "Date & Time", "Amount", "Image
 
 CATEGORIES = [
     "Food", "Groceries", "Travel", "Shopping", "Utilities",
-    "Bills", "Health", "Entertainment", "Other",
+    "Bills", "Rent", "EMI", "Education", "Health", "Entertainment", "Other",
 ]
 
 _working_model = {"name": None}
