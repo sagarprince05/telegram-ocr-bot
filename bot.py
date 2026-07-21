@@ -384,32 +384,20 @@ def summary_reply(vendor, category, total, has_image):
 async def start(update, context):
     await update.message.reply_text(
         "Hi! I'm your bill logger.\n\n"
-        "Send me a photo of a bill (or a text note) and I'll save it to your "
-        "Google Sheet with your name, Telegram ID, category, date & time, "
-        "total, and the image.\n\nTry sending a receipt photo!"
+        "📸 Send me a *photo of a bill / receipt* and I'll save it to your "
+        "Google Sheet with the vendor, category, date, total, and the image.\n\n"
+        "Note: only *photos* are saved — text messages are not logged.",
+        parse_mode="Markdown",
     )
 
 
 async def handle_text(update, context):
-    worksheet = context.bot_data["worksheet"]
-    user = update.effective_user
-    text = update.message.text
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id, action=ChatAction.TYPING
+    # Text messages are NOT saved. Only receipt/bill photos are logged.
+    await update.message.reply_text(
+        "⚠️ Invalid. Please send a *photo of a bill / receipt* — only images "
+        "are saved to the sheet, not text messages.",
+        parse_mode="Markdown",
     )
-    try:
-        fields = await extract_fields(text)
-        spent_at = fields.get("date") or now_string()
-        save_row(worksheet, user.full_name, user.id,
-                 fields.get("vendor", ""), fields["category"], spent_at,
-                 fields["total"], "")
-        await update.message.reply_text(
-            summary_reply(fields.get("vendor", ""), fields["category"],
-                          fields["total"], False)
-        )
-    except Exception as exc:
-        logger.exception("Failed to handle text")
-        await update.message.reply_text(f"⚠️ Sorry, I couldn't save that: {exc}")
 
 
 async def handle_photo(update, context):
