@@ -270,8 +270,12 @@ async def ocr_image(image_bytes):
 
 
 EXTRACT_PROMPT = (
-    "You are an expense parser. Read the text below (from a bill photo or a "
-    "plain note) and return three fields.\n"
+    "You are an expense parser. The OCR text below may contain ONE OR MORE "
+    "separate bills/receipts. Return a JSON object with a 'receipts' array — "
+    "ONE entry per distinct bill found. If the text clearly contains multiple "
+    "bills (e.g. different vendors, or several 'GRAND TOTAL' lines), return each "
+    "as a separate entry. If there is no bill/amount at all, return an empty "
+    "'receipts' array. Each receipt entry has these fields:\n"
     "- total: the final total amount paid as a NUMBER ONLY, with no currency "
     "symbol or words. Use only digits and an optional decimal point "
     "(e.g. '1529.00', NOT 'Rs. 1529.00'). IMPORTANT: this text comes from OCR, "
@@ -305,18 +309,30 @@ def clean_amount(value):
 RESPONSE_SCHEMA = {
     "type": "OBJECT",
     "properties": {
-        "total": {"type": "STRING"},
-        "category": {"type": "STRING"},
-        "vendor": {"type": "STRING"},
-        "date": {"type": "STRING"},
+        "receipts": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "total": {"type": "STRING"},
+                    "category": {"type": "STRING"},
+                    "vendor": {"type": "STRING"},
+                    "date": {"type": "STRING"},
+                },
+                "required": ["total", "category", "vendor", "date"],
+            },
+        },
     },
-    "required": ["total", "category", "vendor", "date"],
+    "required": ["receipts"],
 }
 
 
 async def extract_fields(text):
+    """Return a LIST of receipts found in the text. Each item is
+    {total, category, vendor, date}. Entries without a valid amount are dropped.
+    Empty list if nothing found."""
     if not text.strip():
-        return {"total": "", "category": "", "vendor": "", "date": ""}
+        return []
 
     body = {
         "contents": [{"parts": [{"text": EXTRACT_PROMPT + text}]}],
@@ -351,19 +367,26 @@ async def extract_fields(text):
                 resp.raise_for_status()
                 data = resp.json()
                 raw = data["candidates"][0]["content"]["parts"][0]["text"]
-                fields = json.loads(raw)
+                parsed = json.loads(raw)
                 _working_model["name"] = model
-                cat = str(fields.get("category", "")).strip() or "Other"
-                return {"total": clean_amount(fields.get("total", "")),
-                        "category": cat,
-                        "vendor": str(fields.get("vendor", "")).strip(),
-                        "date": str(fields.get("date", "")).strip()}
+                out = []
+                for r in parsed.get("receipts", []):
+                    total = clean_amount(r.get("total", ""))
+                    if not total:
+                        continue  # skip bills with no amount
+                    out.append({
+                        "total": total,
+                        "category": str(r.get("category", "")).strip() or "Other",
+                        "vendor": str(r.get("vendor", "")).strip(),
+                        "date": str(r.get("date", "")).strip(),
+                    })
+                return out
             except Exception as exc:
                 last_err = str(exc)
                 continue
 
     logger.warning("Gemini extraction failed: %s", last_err)
-    return {"total": "", "category": "", "vendor": "", "date": ""}
+    return []
 
 
 def save_row(worksheet, name, tg_id, vendor, category, spent_at, total, image_cell):
@@ -381,6 +404,20 @@ def summary_reply(vendor, category, total, has_image):
         lines.append(f"🏷️ Category: {category}")
     if total:
         lines.append(f"💰 Total: {total}")
+    if has_image:
+        lines.append("🖼️ Image saved (view it in the sheet).")
+    return "\n".join(lines)
+
+
+def multi_summary(receipts, has_image):
+    """Reply for one OR many receipts saved from a single image."""
+    if len(receipts) == 1:
+        r = receipts[0]
+        return summary_reply(r["vendor"], r["category"], r["total"], has_image)
+    lines = [f"✅ Saved {len(receipts)} receipts to your sheet!"]
+    for i, r in enumerate(receipts, 1):
+        vendor = r["vendor"] or "—"
+        lines.append(f"{i}. {vendor} — ₹{r['total']} ({r['category']})")
     if has_image:
         lines.append("🖼️ Image saved (view it in the sheet).")
     return "\n".join(lines)
@@ -439,23 +476,24 @@ async def handle_photo(update, context):
         logger.exception("OCR failed")
         raw_text = ""
 
-    fields = await extract_fields(raw_text) if raw_text else {"total": "", "category": "", "vendor": "", "date": ""}
+    receipts = await extract_fields(raw_text) if raw_text else []
 
-    # No bill amount found -> invalid, do NOT save to the sheet.
-    if not str(fields.get("total", "")).strip():
+    # No bill amount found in any receipt -> invalid, do NOT save.
+    if not receipts:
         await update.message.reply_text(
             "⚠️ Invalid — no bill amount found in this image. Please send a "
             "clear photo of a bill/receipt that shows the total amount."
         )
         return
 
-    spent_at = fields.get("date") or now_string()
     display_name = NAME_OVERRIDES.get(user.id, user.full_name)
 
     try:
-        save_row(worksheet, display_name, user.id,
-                 fields.get("vendor", ""), fields["category"], spent_at,
-                 fields["total"], image_cell)
+        for r in receipts:
+            spent_at = r.get("date") or now_string()
+            save_row(worksheet, display_name, user.id,
+                     r["vendor"], r["category"], spent_at,
+                     r["total"], image_cell)
     except Exception as exc:
         logger.exception("Failed to save row")
         await update.message.reply_text(
@@ -463,10 +501,7 @@ async def handle_photo(update, context):
         )
         return
 
-    await update.message.reply_text(
-        summary_reply(fields.get("vendor", ""), fields["category"],
-                      fields["total"], bool(image_cell))
-    )
+    await update.message.reply_text(multi_summary(receipts, bool(image_cell)))
 
 
 async def handle_document(update, context):
