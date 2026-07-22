@@ -77,6 +77,11 @@ SCOPES = [
 
 HEADER_ROW = ["Name", "Telegram ID", "Vendor", "Category", "Date & Time", "Amount", "Image"]
 
+# Save a fixed name for specific Telegram IDs (overrides their Telegram profile name).
+NAME_OVERRIDES = {
+    936117308: "Ashutosh Kashyap",
+}
+
 CATEGORIES = [
     "Food", "Groceries", "Travel", "Shopping", "Utilities",
     "Bills", "Rent", "EMI", "Education", "Health", "Entertainment", "Other",
@@ -435,10 +440,20 @@ async def handle_photo(update, context):
         raw_text = ""
 
     fields = await extract_fields(raw_text) if raw_text else {"total": "", "category": "", "vendor": "", "date": ""}
+
+    # No bill amount found -> invalid, do NOT save to the sheet.
+    if not str(fields.get("total", "")).strip():
+        await update.message.reply_text(
+            "⚠️ Invalid — no bill amount found in this image. Please send a "
+            "clear photo of a bill/receipt that shows the total amount."
+        )
+        return
+
     spent_at = fields.get("date") or now_string()
+    display_name = NAME_OVERRIDES.get(user.id, user.full_name)
 
     try:
-        save_row(worksheet, user.full_name, user.id,
+        save_row(worksheet, display_name, user.id,
                  fields.get("vendor", ""), fields["category"], spent_at,
                  fields["total"], image_cell)
     except Exception as exc:
